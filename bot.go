@@ -106,6 +106,7 @@ func saveTokenToFile(filename string, token string) error {
 	return err
 }
 
+// REEMPLAZA LA FUNCIÓN messageCreate() ORIGINAL CON ESTA VERSIÓN CORREGIDA
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignorar los mensajes del propio bot.
 	if m.Author.ID == s.State.User.ID {
@@ -119,33 +120,44 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	// Manejar el comando !ataque raknet.
-	if parts[0] == "!ataque" && parts[1] == "raknet" {
-		if len(parts) != 5 {
+	if parts[0] == "!ataque" {
+		if len(parts) < 2 { // Verificación adicional
 			s.ChannelMessageSend(m.ChannelID, "Uso: !ataque raknet <ip> <puerto> <time>")
 			return
 		}
 
-		ip := parts[2]
-		port, err := strconv.Atoi(parts[3])
-		if err != nil {
-			s.ChannelMessageSend(m.ChannelID, "El puerto debe ser un número válido")
-			return
-		}
-		duration, err := strconv.Atoi(parts[4])
-		if err != nil {
-			s.ChannelMessageSend(m.ChannelID, "El tiempo debe ser un número válido")
-			return
-		}
+		if parts[1] == "raknet" {
+			if len(parts) != 5 {
+				s.ChannelMessageSend(m.ChannelID, "Uso: !ataque raknet <ip> <puerto> <time>")
+				return
+			}
 
-		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Atacando %s:%d durante %d segundos...", ip, port, duration))
-		go raknetAttack(ip, port, duration, s, m.ChannelID) // ejecutar el ataque en una goroutine para no bloquear el bot
+			ip := parts[2]
+			port, err := strconv.Atoi(parts[3])
+			if err != nil {
+				s.ChannelMessageSend(m.ChannelID, "El puerto debe ser un número válido")
+				return
+			}
+			duration, err := strconv.Atoi(parts[4])
+			if err != nil {
+				s.ChannelMessageSend(m.ChannelID, "El tiempo debe ser un número válido")
+				return
+			}
+
+			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Atacando %s:%d durante %d segundos...", ip, port, duration))
+			go raknetAttack(ip, port, duration, s, m.ChannelID) // ejecutar el ataque en una goroutine para no bloquear el bot
+		} else {
+			s.ChannelMessageSend(m.ChannelID, "Uso: !ataque raknet <ip> <puerto> <time>")
+			return
+		}
 	}
 }
+
 
 func raknetAttack(ip string, port int, duration int, s *discordgo.Session, channelID string) {
 	// Validar el tiempo.  Importante para evitar ataques demasiado largos.
 	if duration > 60 { // Limitar a 60 segundos para seguridad.
-		s.ChannelMessageSend(channelID, "El tiempo máximo de ataque es de 60 segundos.")
+		s.ChannelMessageSend(channelID, "El tiempo máximo de ataque es de 60 segundos")
 		return
 	}
 
