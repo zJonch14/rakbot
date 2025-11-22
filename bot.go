@@ -159,7 +159,7 @@ func handleHelpCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 	helpMsg := "**Comandos disponibles:**\n" +
 		".raknet <ip> <puerto> <conexiones> <segundos>\n" +
 		".stop - Detiene los ataques\n" +
-		".help - Muestra esta ayuda\n\n" +
+		".help - Muestra esta ayuda\n\n"
 
 	s.ChannelMessageSend(m.ChannelID, helpMsg)
 }
