@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,7 +21,24 @@ var (
 func main() {
 	token := os.Getenv("DISCORD_BOT_TOKEN")
 	if token == "" {
-		fmt.Println("Error: DISCORD_BOT_TOKEN no está configurado")
+		// Si el token no está como variable de entorno, busca en token.txt
+		data, err := os.ReadFile("token.txt")
+		if err != nil || len(strings.TrimSpace(string(data))) == 0 {
+			// Si tampoco está en token.txt, pedirlo por consola
+			// Pedirlo de la terminal (input)
+			fmt.Print("Introduce tu DISCORD_BOT_TOKEN: ")
+			reader := bufio.NewReader(os.Stdin)
+			tk, _ := reader.ReadString('\n')
+			token = strings.TrimSpace(tk)
+			// Guardar token en token.txt
+			os.WriteFile("token.txt", []byte(token), 0600)
+		} else {
+			token = strings.TrimSpace(string(data))
+		}
+	}
+
+	if token == "" {
+		fmt.Println("Error: No se proporcionó un DISCORD_BOT_TOKEN válido")
 		return
 	}
 
